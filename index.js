@@ -1,98 +1,144 @@
-const express = require('express');
-const axios = require('axios');
-const admin = require('firebase-admin');
-const cors = require('cors');
+// otp_server.js (Rename to index.js if using Render)
+const express = require("express");
+const cors = require("cors");
+const bodyParser = require("body-parser");
+const axios = require("axios");
+const admin = require("firebase-admin");
+
 const app = express();
-app.use(express.json());
+const port = process.env.PORT || 3000;
+
 app.use(cors());
+app.use(bodyParser.json());
 
-// Firebase Admin SDK init
+// Firebase Admin Init
+const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 admin.initializeApp({
-  credential: admin.credential.cert(require('./serviceAccountKey.json')),
-  databaseURL: "https://YOUR_PROJECT_ID.firebaseio.com"
+  credential: admin.credential.cert(serviceAccount),
 });
+const db = admin.firestore();
 
-// Cashfree credentials (use Render's env vars for security)
-const CASHFREE_APP_ID = process.env.CASHFREE_APP_ID;
-const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
+// Cashfree Credentials
+const APP_ID = process.env.CASHFREE_APP_ID;
+const SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
+const BASE_URL = "https://api.cashfree.com/pg"; // For production use: https://api.cashfree.com/pg
+const PAYOUT_URL = "https://payout-api.cashfree.com/payout/v1"; // Production payout URL
 
-// 1. Pay-in (Customer Payment)
-app.post('/api/payments/create-session', async (req, res) => {
-  const { orderId, amount, customerName, customerEmail, customerPhone } = req.body;
+//----------------------------------
+// 🔹 Create Payment Link (Cashfree)
+//----------------------------------
+app.post("/create-payment", async (req, res) => {
+  const { amount, customer_name, customer_phone, customer_email, notes } = req.body;
+
   try {
     const response = await axios.post(
-      "https://sandbox.cashfree.com/pg/orders",
+      `${BASE_URL}/links`,
       {
-        order_id: orderId,
-        order_amount: amount,
-        order_currency: "INR",
         customer_details: {
-          customer_id: customerEmail || customerPhone,
-          customer_email: customerEmail,
-          customer_phone: customerPhone,
-          customer_name: customerName,
+          customer_name,
+          customer_email,
+          customer_phone,
         },
+        link_notify: {
+          send_sms: true,
+          send_email: true,
+        },
+        link_meta: {
+          return_url: "https://example.com/thank-you", // Replace with your app return URL
+        },
+        link_amount: amount,
+        link_currency: "INR",
+        link_purpose: "Payment for order",
+        link_notes: notes || {},
       },
       {
         headers: {
-          "x-client-id": CASHFREE_APP_ID,
-          "x-client-secret": CASHFREE_SECRET_KEY,
           "x-api-version": "2022-09-01",
+          "x-client-id": APP_ID,
+          "x-client-secret": SECRET_KEY,
           "Content-Type": "application/json",
         },
       }
     );
+
+    // Save to Firestore (optional)
+    await db.collection("payments").add({
+      ...req.body,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      status: "PENDING",
+      cashfreeLinkId: response.data.link_id,
+    });
+
     res.json(response.data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  } catch (error) {
+    console.error("Error creating payment link:", error.response?.data || error.message);
+    res.status(500).json({ error: "Payment creation failed" });
   }
 });
 
-// 2. Payout (Seller Withdrawal)
-app.post('/api/payouts/withdraw', async (req, res) => {
-  const { sellerId, amount, bankAccount, ifsc, name } = req.body;
+//----------------------------------
+// 🔹 Cashfree Payout (Bank Transfer)
+//----------------------------------
+app.post("/payout", async (req, res) => {
+  const { bank_account, ifsc, amount, name, phone } = req.body;
+
   try {
-    const response = await axios.post(
-      "https://payout-gamma.cashfree.com/payout/v1/requestTransfer",
+    const tokenRes = await axios.post(
+      `${PAYOUT_URL}/authorize`,
+      {},
       {
-        beneId: sellerId,
-        amount: amount,
-        transferId: `payout_${Date.now()}`,
+        headers: {
+          "X-Client-Id": APP_ID,
+          "X-Client-Secret": SECRET_KEY,
+        },
+      }
+    );
+
+    const token = tokenRes.data.data.token;
+
+    const transferRes = await axios.post(
+      `${PAYOUT_URL}/requestTransfer`,
+      {
+        beneId: phone,
+        amount,
+        transferId: `tx_${Date.now()}`,
         transferMode: "banktransfer",
-        remarks: "Seller Payout",
-        bankAccount: bankAccount,
-        ifsc: ifsc,
-        name: name,
+        remarks: "Payout",
       },
       {
         headers: {
-          "X-Client-Id": CASHFREE_APP_ID,
-          "X-Client-Secret": CASHFREE_SECRET_KEY,
+          Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
         },
       }
     );
-    res.json(response.data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+
+    // Save to Firestore (optional)
+    await db.collection("payouts").add({
+      name,
+      phone,
+      amount,
+      bank_account,
+      ifsc,
+      status: "PROCESSING",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      response: transferRes.data,
+    });
+
+    res.json(transferRes.data);
+  } catch (error) {
+    console.error("Payout Error:", error.response?.data || error.message);
+    res.status(500).json({ error: "Payout failed" });
   }
 });
 
-// 3. Webhook (Payment/Payout Status)
-app.post('/api/cashfree/webhook', async (req, res) => {
-  const { order_id, order_status, payout_id, payout_status } = req.body;
-  try {
-    if (order_id && order_status) {
-      await admin.firestore().collection('orders').doc(order_id).update({ status: order_status });
-    }
-    if (payout_id && payout_status) {
-      await admin.firestore().collection('payouts').doc(payout_id).update({ status: payout_status });
-    }
-    res.sendStatus(200);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+//-----------------------------
+// ✅ Health Check Route
+//-----------------------------
+app.get("/", (req, res) => {
+  res.send("Cashfree API is running ✅");
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(port, () => {
+  console.log(`✅ Server is running on http://localhost:${port}`);
+});

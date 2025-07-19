@@ -2,9 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
 const admin = require("firebase-admin");
-
-// Import controller
-const payoutController = require("./controllers/payoutController");
+const payoutRoutes = require("./routes/payout"); // ✅ Import route
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -12,28 +10,25 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(bodyParser.json());
 
-// Firebase Admin Init
+// Firebase Init
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 const db = admin.firestore();
-app.set("db", db); // 👈 Firestore access in controllers
 
-// Cashfree Credentials (used in controllers)
+// Set shared variables
+app.set("db", db);
 app.set("APP_ID", process.env.CASHFREE_APP_ID);
 app.set("SECRET_KEY", process.env.CASHFREE_SECRET_KEY);
 
-//-----------------------------
-// ✅ Health Check Route
-//-----------------------------
-app.get("/", (req, res) => {
-  res.send("Cashfree API is running ✅");
-});
+// Routes
+app.use("/payout", (req, res, next) => {
+  req.app = app; // ✅ Pass express app to route
+  next();
+}, payoutRoutes);
 
-//-----------------------------
-// 🔹 Payment Route (inline)
-//-----------------------------
+// Payment Route (optional - same file)
 app.post("/create-payment", async (req, res) => {
   const axios = require("axios");
   const {
@@ -79,7 +74,7 @@ app.post("/create-payment", async (req, res) => {
       }
     );
 
-    await app.get("db").collection("payments").add({
+    await db.collection("payments").add({
       ...req.body,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       status: "PENDING",
@@ -88,16 +83,16 @@ app.post("/create-payment", async (req, res) => {
 
     res.json(response.data);
   } catch (error) {
-    console.error("Payment Error:", error.response?.data || error.message);
+    console.error("Payment Link Error:", error.response?.data || error.message);
     res.status(500).json({ error: "Payment creation failed" });
   }
 });
 
-//-----------------------------
-// 🔹 Payout Route via Controller
-//-----------------------------
-app.post("/payout", (req, res) => payoutController(req, res, app));
+// Health Route
+app.get("/", (req, res) => {
+  res.send("✅ Cashfree Server Running");
+});
 
 app.listen(port, () => {
-  console.log(`✅ Server is running on http://localhost:${port}`);
+  console.log(`✅ Server is live at http://localhost:${port}`);
 });

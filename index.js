@@ -1,9 +1,10 @@
-// otp_server.js (Rename to index.js if using Render)
 const express = require("express");
 const cors = require("cors");
 const bodyParser = require("body-parser");
-const axios = require("axios");
 const admin = require("firebase-admin");
+
+// Import controller
+const payoutController = require("./controllers/payoutController");
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -17,18 +18,35 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
 });
 const db = admin.firestore();
+app.set("db", db); // 👈 Firestore access in controllers
 
-// Cashfree Credentials
-const APP_ID = process.env.CASHFREE_APP_ID;
-const SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
-const BASE_URL = "https://api.cashfree.com/pg"; // For production use: https://api.cashfree.com/pg
-const PAYOUT_URL = "https://payout-api.cashfree.com/payout/v1"; // Production payout URL
+// Cashfree Credentials (used in controllers)
+app.set("APP_ID", process.env.CASHFREE_APP_ID);
+app.set("SECRET_KEY", process.env.CASHFREE_SECRET_KEY);
 
-//----------------------------------
-// 🔹 Create Payment Link (Cashfree)
-//----------------------------------
+//-----------------------------
+// ✅ Health Check Route
+//-----------------------------
+app.get("/", (req, res) => {
+  res.send("Cashfree API is running ✅");
+});
+
+//-----------------------------
+// 🔹 Payment Route (inline)
+//-----------------------------
 app.post("/create-payment", async (req, res) => {
-  const { amount, customer_name, customer_phone, customer_email, notes } = req.body;
+  const axios = require("axios");
+  const {
+    amount,
+    customer_name,
+    customer_phone,
+    customer_email,
+    notes,
+  } = req.body;
+
+  const APP_ID = app.get("APP_ID");
+  const SECRET_KEY = app.get("SECRET_KEY");
+  const BASE_URL = "https://api.cashfree.com/pg";
 
   try {
     const response = await axios.post(
@@ -44,7 +62,7 @@ app.post("/create-payment", async (req, res) => {
           send_email: true,
         },
         link_meta: {
-          return_url: "https://example.com/thank-you", // Replace with your app return URL
+          return_url: "https://example.com/thank-you",
         },
         link_amount: amount,
         link_currency: "INR",
@@ -61,8 +79,7 @@ app.post("/create-payment", async (req, res) => {
       }
     );
 
-    // Save to Firestore (optional)
-    await db.collection("payments").add({
+    await app.get("db").collection("payments").add({
       ...req.body,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       status: "PENDING",
@@ -71,73 +88,15 @@ app.post("/create-payment", async (req, res) => {
 
     res.json(response.data);
   } catch (error) {
-    console.error("Error creating payment link:", error.response?.data || error.message);
+    console.error("Payment Error:", error.response?.data || error.message);
     res.status(500).json({ error: "Payment creation failed" });
   }
 });
 
-//----------------------------------
-// 🔹 Cashfree Payout (Bank Transfer)
-//----------------------------------
-app.post("/payout", async (req, res) => {
-  const { bank_account, ifsc, amount, name, phone } = req.body;
-
-  try {
-    const tokenRes = await axios.post(
-      `${PAYOUT_URL}/authorize`,
-      {},
-      {
-        headers: {
-          "X-Client-Id": APP_ID,
-          "X-Client-Secret": SECRET_KEY,
-        },
-      }
-    );
-
-    const token = tokenRes.data.data.token;
-
-    const transferRes = await axios.post(
-      `${PAYOUT_URL}/requestTransfer`,
-      {
-        beneId: phone,
-        amount,
-        transferId: `tx_${Date.now()}`,
-        transferMode: "banktransfer",
-        remarks: "Payout",
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    // Save to Firestore (optional)
-    await db.collection("payouts").add({
-      name,
-      phone,
-      amount,
-      bank_account,
-      ifsc,
-      status: "PROCESSING",
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      response: transferRes.data,
-    });
-
-    res.json(transferRes.data);
-  } catch (error) {
-    console.error("Payout Error:", error.response?.data || error.message);
-    res.status(500).json({ error: "Payout failed" });
-  }
-});
-
 //-----------------------------
-// ✅ Health Check Route
+// 🔹 Payout Route via Controller
 //-----------------------------
-app.get("/", (req, res) => {
-  res.send("Cashfree API is running ✅");
-});
+app.post("/payout", (req, res) => payoutController(req, res, app));
 
 app.listen(port, () => {
   console.log(`✅ Server is running on http://localhost:${port}`);

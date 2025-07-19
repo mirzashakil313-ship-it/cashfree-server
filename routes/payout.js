@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { createPayout } = require('../controllers/payoutController');
+const { transferToBank } = require('../controllers/payoutController');
 
-router.post('/payout', createPayout);
+router.post('/transfer', transferToBank);
 
 module.exports = router;

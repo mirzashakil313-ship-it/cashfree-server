@@ -6,6 +6,12 @@ exports.createOrder = async (req, res) => {
     const { amount, customerName, customerPhone, customerEmail } = req.body;
     const orderId = "Order_" + uuidv4();
 
+    // Ensure amount is a number
+    const numericAmount = parseFloat(amount);
+    if (isNaN(numericAmount)) {
+      return res.status(400).json({ message: "Invalid amount provided." });
+    }
+
     const options = {
       method: 'POST',
       url: 'https://sandbox.cashfree.com/pg/orders',
@@ -18,7 +24,7 @@ exports.createOrder = async (req, res) => {
       },
       data: {
         order_id: orderId,
-        order_amount: amount,
+        order_amount: numericAmount, // Yahan badlav kiya gaya hai
         order_currency: 'INR',
         customer_details: {
           customer_id: uuidv4(),
@@ -36,6 +42,8 @@ exports.createOrder = async (req, res) => {
     res.status(200).json(response.data);
 
   } catch (err) {
-    res.status(500).json({ message: "Error creating Cashfree order", error: err });
+    // Log the detailed error from Cashfree if available
+    console.error("Cashfree Error:", err.response ? err.response.data : err.message);
+    res.status(500).json({ message: "Error creating Cashfree order", error: err.response ? err.response.data : err.message });
   }
 };

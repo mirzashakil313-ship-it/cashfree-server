@@ -3,13 +3,13 @@ const { v4: uuidv4 } = require('uuid');
 
 exports.createOrder = async (req, res) => {
   try {
-    const { amount, customerName, customerPhone, customerEmail } = req.body;
-    const orderId = "Order_" + uuidv4();
+    const { customerName, customerPhone, customerEmail, amount } = req.body;
 
-    // Ensure amount is a number
+    const orderId = "Order_" + uuidv4();
     const numericAmount = parseFloat(amount);
+
     if (isNaN(numericAmount)) {
-      return res.status(400).json({ message: "Invalid amount provided." });
+      return res.status(400).json({ message: "Invalid amount" });
     }
 
     const options = {
@@ -19,12 +19,12 @@ exports.createOrder = async (req, res) => {
         accept: 'application/json',
         'x-api-version': '2022-09-01',
         'Content-Type': 'application/json',
-        'x-client-id': process.env.CASHFREE_APP_ID,
-        'x-client-secret': process.env.CASHFREE_SECRET_KEY
+        'x-client-id': process.env.CASHFREE_CLIENT_ID,
+        'x-client-secret': process.env.CASHFREE_CLIENT_SECRET
       },
       data: {
         order_id: orderId,
-        order_amount: numericAmount, // Yahan badlav kiya gaya hai
+        order_amount: numericAmount,
         order_currency: 'INR',
         customer_details: {
           customer_id: uuidv4(),
@@ -33,17 +33,15 @@ exports.createOrder = async (req, res) => {
           customer_name: customerName
         },
         order_meta: {
-          return_url: "https://example.com/payment-status?order_id={order_id}"
+          return_url: "https://your-app.com/success?order_id={order_id}"
         }
       }
     };
 
     const response = await axios.request(options);
     res.status(200).json(response.data);
-
   } catch (err) {
-    // Log the detailed error from Cashfree if available
-    console.error("Cashfree Error:", err.response ? err.response.data : err.message);
-    res.status(500).json({ message: "Error creating Cashfree order", error: err.response ? err.response.data : err.message });
+    console.error("Cashfree error:", err.response?.data || err.message);
+    res.status(500).json({ message: "Cashfree error", error: err.message });
   }
 };
